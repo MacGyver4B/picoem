@@ -14,6 +14,15 @@ public release simply ships those current versions.
 
 ## [Unreleased]
 
+### Fixed
+
+- `rp2350-emu`: `CPSIE`/`CPSID` decoded the I and F flags swapped. In the
+  T1 encoding (`1011 0110 011 im 0 0 I F`) bit 1 selects PRIMASK and bit 0
+  FAULTMASK, so `cpsid i` (`0xB672`, as emitted by GCC) set FAULTMASK and
+  masked every interrupt until the next `cpsie f`. Decoding now matches the
+  architecture and `rp2040-emu`; the unit tests use the architectural
+  encodings.
+
 ## [2026-05-09] — fifth release
 
 Catch-up patch republication of the three library crates that were

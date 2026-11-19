@@ -785,8 +785,10 @@ impl CortexM33 {
             0b0110 => {
                 // CPS: CPSIE/CPSID — affects PRIMASK/FAULTMASK
                 let im = ((opcode >> 4) & 1) as u32;
-                let affect_i = opcode & (1 << 0) != 0; // bit 0 = I (PRIMASK)
-                let affect_f = opcode & (1 << 1) != 0; // bit 1 = F (FAULTMASK)
+                // T1 encoding 1011 0110 011 im 0 0 I F (ARMv8-M): bit 1 = I,
+                // bit 0 = F; `cpsid i` is 0xB672 (matches rp2040-emu)
+                let affect_i = opcode & (1 << 1) != 0; // bit 1 = I (PRIMASK)
+                let affect_f = opcode & (1 << 0) != 0; // bit 0 = F (FAULTMASK)
                 if affect_i {
                     self.regs.primask = im;
                 }
