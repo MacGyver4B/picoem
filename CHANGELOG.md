@@ -16,6 +16,11 @@ public release simply ships those current versions.
 
 ### Added
 
+- `rp2350-emu`: `EmulatorBuilder::package(Package::Qfn80)` selects the
+  RP2350B. `SYSINFO.PACKAGE_SEL` reads 1 and the ADC has nine channels
+  (GPIO 40..47 + temperature sensor); the default stays `Package::Qfn60`
+  (RP2350A, five channels). `CS.AINSEL` / `CS.RROBIN` now have the RP2350
+  widths (4 / 9 bits) on both packages.
 - `rp2350-emu`: SIO `GPIO_HI_OUT` / `GPIO_HI_OE` and their SET/CLR/XOR
   aliases (`0x014`..`0x04C`). GPIO 32..47 now drive the pads on the
   RP2350B package; the USB/QSPI bits (31:24) are stored but not driven.

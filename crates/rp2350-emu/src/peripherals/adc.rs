@@ -14,6 +14,11 @@
 //!   (48 MHz on RP2350, same as RP2040 in post-bootrom state).
 //! * `sys_clk_hz` comes from the current `ClockTree` (seeded to
 //!   150 MHz at emulator reset per HLD V5 §5.7).
+//! * `CS.AINSEL` is 4 bits and `CS.RROBIN` 9 bits wide (pico-sdk
+//!   `ADC_CS_AINSEL_BITS` / `ADC_CS_RROBIN_BITS`). The channel count
+//!   follows the package: 5 on RP2350A (GPIO 26..29 + temperature
+//!   sensor), 9 on RP2350B (GPIO 40..47 + temperature sensor), see
+//!   [`crate::Package`].
 //!
 //! # Clock scaling
 //!
@@ -61,9 +66,9 @@ pub const CS_READY: u32 = 1 << 8;
 pub const CS_ERR: u32 = 1 << 9;
 pub const CS_ERR_STICKY: u32 = 1 << 10;
 const CS_AINSEL_SHIFT: u32 = 12;
-const CS_AINSEL_MASK: u32 = 0x7 << CS_AINSEL_SHIFT;
+const CS_AINSEL_MASK: u32 = 0xF << CS_AINSEL_SHIFT;
 const CS_RROBIN_SHIFT: u32 = 16;
-const CS_RROBIN_MASK: u32 = 0x1F << CS_RROBIN_SHIFT;
+const CS_RROBIN_MASK: u32 = 0x1FF << CS_RROBIN_SHIFT;
 
 const CS_WRITE_MASK: u32 = CS_EN
     | CS_TS_EN
@@ -105,6 +110,14 @@ pub const CONVERSION_ADC_TICKS: u32 = 96;
 /// FIFO depth — four 12/16-bit entries (datasheet §12.4.1).
 pub const ADC_FIFO_DEPTH: usize = 4;
 
+/// ADC channels on RP2350A (QFN-60): GPIO 26..29 + temperature sensor
+/// (pico-sdk `NUM_ADC_CHANNELS` = 5).
+pub const ADC_CHANNELS_QFN60: u32 = 5;
+
+/// ADC channels on RP2350B (QFN-80): GPIO 40..47 + temperature sensor
+/// (pico-sdk `NUM_ADC_CHANNELS` = 9).
+pub const ADC_CHANNELS_QFN80: u32 = 9;
+
 /// ADC register storage.
 pub struct AdcRegs {
     cs: u32,
@@ -119,6 +132,8 @@ pub struct AdcRegs {
     conversion_remaining: Option<u32>,
     conversion_counter: u32,
     nvic_irq: u32,
+    /// Number of channels for the package (5 on RP2350A, 9 on RP2350B).
+    channels: u32,
 }
 
 impl AdcRegs {
@@ -138,12 +153,25 @@ impl AdcRegs {
             conversion_remaining: None,
             conversion_counter: 0,
             nvic_irq,
+            channels: ADC_CHANNELS_QFN60,
         }
     }
 
     pub fn reset(&mut self) {
         let irq = self.nvic_irq;
+        let channels = self.channels;
         *self = Self::new(irq);
+        self.channels = channels;
+    }
+
+    /// Select the channel count for the package: [`ADC_CHANNELS_QFN60`]
+    /// (default) or [`ADC_CHANNELS_QFN80`].
+    pub fn set_channels(&mut self, channels: u32) {
+        self.channels = channels.clamp(1, ADC_CHANNELS_QFN80);
+    }
+
+    pub fn channels(&self) -> u32 {
+        self.channels
     }
 
     pub fn fifo_len(&self) -> usize {
@@ -239,12 +267,14 @@ impl AdcRegs {
         }
 
         // Round-robin channel advancement (datasheet §12.4.3 CS.RROBIN).
-        let rrobin = (self.cs & CS_RROBIN_MASK) >> CS_RROBIN_SHIFT;
+        // Bits for channels the package does not have are ignored.
+        let n = self.channels;
+        let rrobin = ((self.cs & CS_RROBIN_MASK) >> CS_RROBIN_SHIFT) & ((1 << n) - 1);
         if rrobin != 0 {
             let current = ch;
-            let mut next = (current + 1) % 5; // 5 ADC channels on RP2350
+            let mut next = (current + 1) % n;
             while rrobin & (1 << next) == 0 {
-                next = (next + 1) % 5;
+                next = (next + 1) % n;
             }
             self.cs = (self.cs & !CS_AINSEL_MASK) | (next << CS_AINSEL_SHIFT);
         }
@@ -469,6 +499,81 @@ mod tests {
         assert_eq!(a.last_sample, 0);
         assert!(a.fifo.is_empty());
         assert!(a.is_idle());
+    }
+
+    // --- Package channel count (RP2350A / RP2350B) ---------------------
+
+    /// Run conversions and collect the channel of each RESULT
+    /// (`make_sample` puts the channel in bits 11:8).
+    fn collect_channels(a: &mut AdcRegs, conversions: usize) -> Vec<u32> {
+        let mut irqs = 0u64;
+        let mut seen = Vec::new();
+        // 96 clk_adc ticks at 48 MHz = 300 clk_sys cycles at 150 MHz.
+        for _ in 0..conversions {
+            a.tick(300, &default_tree(), &mut irqs);
+            seen.push((a.read32(RESULT) >> 8) & 0xF);
+        }
+        seen
+    }
+
+    #[test]
+    fn ainsel_and_rrobin_fields_are_rp2350_width() {
+        let mut a = AdcRegs::new(ADC_IRQ);
+        let mut irqs = 0u64;
+        a.write32(
+            CS,
+            (8 << CS_AINSEL_SHIFT) | (0x1FF << CS_RROBIN_SHIFT),
+            0,
+            &mut irqs,
+        );
+        assert_eq!(a.ainsel(), 8);
+        assert_eq!((a.cs & CS_RROBIN_MASK) >> CS_RROBIN_SHIFT, 0x1FF);
+    }
+
+    #[test]
+    fn qfn80_round_robin_reaches_channels_5_to_8() {
+        let mut a = AdcRegs::new(ADC_IRQ);
+        a.set_channels(ADC_CHANNELS_QFN80);
+        let mut irqs = 0u64;
+        // RROBIN = channels 5..8 (GPIO 45..47 + temperature sensor).
+        a.write32(
+            CS,
+            CS_EN | CS_START_MANY | (5 << CS_AINSEL_SHIFT) | (0x1E0 << CS_RROBIN_SHIFT),
+            0,
+            &mut irqs,
+        );
+        assert_eq!(collect_channels(&mut a, 8), vec![5, 6, 7, 8, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn qfn60_round_robin_ignores_channels_beyond_4() {
+        let mut a = AdcRegs::new(ADC_IRQ);
+        let mut irqs = 0u64;
+        // All nine RROBIN bits set: only channels 0..4 exist on RP2350A.
+        a.write32(
+            CS,
+            CS_EN | CS_START_MANY | (0x1FF << CS_RROBIN_SHIFT),
+            0,
+            &mut irqs,
+        );
+        assert_eq!(collect_channels(&mut a, 6), vec![0, 1, 2, 3, 4, 0]);
+        // Only bits of missing channels: no advance (and no endless loop).
+        let mut b = AdcRegs::new(ADC_IRQ);
+        b.write32(
+            CS,
+            CS_EN | CS_START_MANY | (2 << CS_AINSEL_SHIFT) | (0x1E0 << CS_RROBIN_SHIFT),
+            0,
+            &mut irqs,
+        );
+        assert_eq!(collect_channels(&mut b, 2), vec![2, 2]);
+    }
+
+    #[test]
+    fn reset_keeps_package_channel_count() {
+        let mut a = AdcRegs::new(ADC_IRQ);
+        a.set_channels(ADC_CHANNELS_QFN80);
+        a.reset();
+        assert_eq!(a.channels(), ADC_CHANNELS_QFN80);
     }
 
     // --- CS write sanitisation ------------------------------------------

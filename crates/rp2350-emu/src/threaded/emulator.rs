@@ -239,6 +239,9 @@ impl ThreadedEmulator {
             usbctrl,
             warned_clk_enable_clear: _,
             reservation: _,
+            // PACKAGE_SEL is served by the threaded `sysinfo_read`; the
+            // ADC channel count travels with `adc`.
+            package: _,
         } = bus;
 
         let shared_mem = Arc::new(SharedMemory::from_memory(

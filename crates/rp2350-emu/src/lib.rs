@@ -266,6 +266,19 @@ pub enum Arch {
     RiscV,
 }
 
+/// Package selector. The RP2350A (QFN-60) has GPIO 0..29 and five ADC
+/// channels; the RP2350B (QFN-80) has GPIO 0..47 and nine ADC channels
+/// (GPIO 40..47 + temperature sensor). Reported through
+/// `SYSINFO.PACKAGE_SEL` and used for the ADC channel count.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Package {
+    /// RP2350A / RP2354A (QFN-60), `PACKAGE_SEL` = 0.
+    #[default]
+    Qfn60,
+    /// RP2350B / RP2354B (QFN-80), `PACKAGE_SEL` = 1.
+    Qfn80,
+}
+
 /// Per-arch core pair. `expect_arm*` / `expect_riscv*` panic on the
 /// wrong arm — documented programmer-error contract for call sites
 /// that the shimmed `Emulator::core(id)` path can't cover.
@@ -1501,6 +1514,7 @@ pub struct EmulatorBuilder {
     config: Config,
     step_quantum: u32,
     arch: Arch,
+    package: Package,
     execution: ExecutionModel,
 }
 
@@ -1510,6 +1524,7 @@ impl EmulatorBuilder {
             config,
             step_quantum: DEFAULT_STEP_QUANTUM,
             arch: Arch::default(),
+            package: Package::default(),
             execution: ExecutionModel::default(),
         }
     }
@@ -1534,6 +1549,13 @@ impl EmulatorBuilder {
     /// placeholder Hazard3 — real ISA lands in P1b.
     pub fn arch(mut self, arch: Arch) -> Self {
         self.arch = arch;
+        self
+    }
+
+    /// Select the chip package. Defaults to [`Package::Qfn60`]
+    /// (RP2350A); [`Package::Qfn80`] models the RP2350B.
+    pub fn package(mut self, package: Package) -> Self {
+        self.package = package;
         self
     }
 
@@ -1595,6 +1617,7 @@ impl EmulatorBuilder {
         if self.config.sys_clk_hz != Config::default().sys_clk_hz {
             bus.seed_sys_clk_hz(self.config.sys_clk_hz);
         }
+        bus.set_package(self.package);
         info!(
             rom_size = memory::ROM_SIZE,
             sram_size = memory::SRAM_SIZE,

@@ -330,6 +330,8 @@ pub struct Bus {
     pub(crate) i2c: [I2cRegs; 2],
     /// ADC — single instance at `0x400A_0000`.
     pub(crate) adc: AdcRegs,
+    /// Chip package (RP2350A/B) — `SYSINFO.PACKAGE_SEL`, ADC channels.
+    pub(crate) package: crate::Package,
     /// PWM — 12-slice block at `0x4005_0000`.
     pub(crate) pwm: PwmRegs,
     /// IO_BANK0 plain-storage GPIO control (HLD V5 §5.8).
@@ -614,6 +616,7 @@ impl Bus {
                 I2cRegs::new(IRQ_I2C1_IRQ, DREQ_I2C1_TX, DREQ_I2C1_RX),
             ],
             adc: AdcRegs::new(IRQ_ADC_IRQ_FIFO),
+            package: crate::Package::default(),
             pwm: PwmRegs::new(IRQ_PWM_IRQ_WRAP_0, IRQ_PWM_IRQ_WRAP_1),
             io_bank0: IoBank0Regs::new(),
             pads_bank0: PadsBank0Regs::new(),
@@ -697,6 +700,16 @@ impl Bus {
     pub fn seed_sys_clk_hz(&mut self, hz: u32) {
         self.clock_tree.sys_clk_hz = hz;
         self.clock_tree.ref_clk_hz = hz;
+    }
+
+    /// Select the chip package (RP2350A/B): `SYSINFO.PACKAGE_SEL` and
+    /// the ADC channel count. Called by `EmulatorBuilder::build`.
+    pub fn set_package(&mut self, package: crate::Package) {
+        self.package = package;
+        self.adc.set_channels(match package {
+            crate::Package::Qfn60 => crate::peripherals::adc::ADC_CHANNELS_QFN60,
+            crate::Package::Qfn80 => crate::peripherals::adc::ADC_CHANNELS_QFN80,
+        });
     }
 
     /// Seed the clock tree to the RP2350 post-bootrom state per HLD

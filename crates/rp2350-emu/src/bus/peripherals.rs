@@ -87,9 +87,13 @@ impl Bus {
             // Silicon-scenario observe mask 0x0FFF_FFFF drops the REV
             // nibble (varies by die).
             0x000 => 0x0000_4927,
-            // PACKAGE_SEL: RP2350A (Pico 2 baseline). Datasheet §12.11.2
-            // and SDK `SYSINFO_PACKAGE_SEL_RESET = 0x0`.
-            0x004 => 0x0000_0000,
+            // PACKAGE_SEL: 0 = RP2350A (Pico 2 baseline, default), 1 =
+            // RP2350B. Datasheet §12.11.2, SDK `SYSINFO_PACKAGE_SEL_RESET
+            // = 0x0`; selected with `EmulatorBuilder::package`.
+            0x004 => match self.package {
+                crate::Package::Qfn60 => 0x0000_0000,
+                crate::Package::Qfn80 => 0x0000_0001,
+            },
             // PLATFORM: live RP2354 silicon reads 0 (V12 Stage 3,
             // probe E46410955F614129). The pico-sdk header
             // `SYSINFO_PLATFORM_RESET = 0x0` was right all along; V11

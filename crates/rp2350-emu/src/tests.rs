@@ -10446,6 +10446,36 @@ fn sysinfo_reads_hardcoded_readonly_fields() {
     );
 }
 
+#[test]
+fn builder_package_qfn80_sets_package_sel_and_adc_channels() {
+    let mut emu = crate::EmulatorBuilder::new(Config::default())
+        .package(crate::Package::Qfn80)
+        .build()
+        .unwrap();
+    assert_eq!(
+        emu.bus.read32(0x4000_0004, 0),
+        1,
+        "SYSINFO.PACKAGE_SEL: RP2350B"
+    );
+    assert_eq!(
+        emu.bus.adc.channels(),
+        crate::peripherals::adc::ADC_CHANNELS_QFN80
+    );
+
+    let mut emu = crate::EmulatorBuilder::new(Config::default())
+        .build()
+        .unwrap();
+    assert_eq!(
+        emu.bus.read32(0x4000_0004, 0),
+        0,
+        "SYSINFO.PACKAGE_SEL: RP2350A"
+    );
+    assert_eq!(
+        emu.bus.adc.channels(),
+        crate::peripherals::adc::ADC_CHANNELS_QFN60
+    );
+}
+
 // ============================================================================
 // TBMAN PLATFORM selector (Coverage Gap Fill V11 §3.4 Bucket A item 4)
 // ============================================================================
