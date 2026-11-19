@@ -7574,6 +7574,30 @@ fn test_sio_gpio_out_write_read() {
 }
 
 #[test]
+fn test_sio_gpio_hi_out_oe_set_clr_xor() {
+    let (_, mut bus) = core_and_bus();
+    // GPIO_HI_OUT (0x014): bits 0..15 = GPIO 32..47
+    bus.write32(0xD000_0014, 0x0000_00F0, 0);
+    assert_eq!(bus.read32(0xD000_0014, 0), 0x0000_00F0);
+    bus.write32(0xD000_001C, 0x0000_0F00, 0); // GPIO_HI_OUT_SET
+    assert_eq!(bus.read32(0xD000_0014, 0), 0x0000_0FF0);
+    bus.write32(0xD000_0024, 0x0000_0030, 0); // GPIO_HI_OUT_CLR
+    assert_eq!(bus.read32(0xD000_0014, 0), 0x0000_0FC0);
+    bus.write32(0xD000_002C, 0x0000_8040, 0); // GPIO_HI_OUT_XOR
+    assert_eq!(bus.read32(0xD000_0014, 0), 0x0000_8F80);
+    // GPIO_HI_OE (0x034)
+    bus.write32(0xD000_003C, 0x0000_0003, 0); // SET
+    bus.write32(0xD000_0044, 0x0000_0001, 0); // CLR
+    assert_eq!(bus.read32(0xD000_0034, 0), 0x0000_0002);
+    // Bits 23:16 are reserved, 31:24 (USB/QSPI) are stored
+    bus.write32(0xD000_0014, 0xFFFF_FFFF, 0);
+    assert_eq!(bus.read32(0xD000_0014, 0), 0xFF00_FFFF);
+    // GPIO_OUT/OE are unaffected
+    assert_eq!(bus.read32(0xD000_0010, 0), 0);
+    assert_eq!(bus.read32(0xD000_0030, 0), 0);
+}
+
+#[test]
 fn test_sio_gpio_set_clr_xor() {
     let (_, mut bus) = core_and_bus();
     // Start with known value

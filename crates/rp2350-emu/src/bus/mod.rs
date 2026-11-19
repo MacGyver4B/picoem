@@ -833,9 +833,10 @@ impl Bus {
     ///
     /// Covers GPIO_OUT (0x010), GPIO_OUT_SET/CLR/XOR (0x018/0x020/
     /// 0x028) and the OE mirrors GPIO_OE / GPIO_OE_SET/CLR/XOR
-    /// (0x030/0x038/0x040/0x048). GPIO_HI_OUT mirrors are not
-    /// modelled on rp2350_emu (see wrk_docs Phase 5 LLD §Known
-    /// Limitations) so this helper does not include their offsets.
+    /// (0x030/0x038/0x040/0x048). The GPIO_HI_OUT/OE mirrors are
+    /// modelled for 32-bit access, but their sub-word behaviour has
+    /// not been checked on silicon, so they stay on the byte-lane RMW
+    /// path and are not listed here.
     #[inline]
     pub fn is_sio_gpio_out_replicating_reg(reg_offset: u32) -> bool {
         matches!(

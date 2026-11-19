@@ -14,6 +14,12 @@ public release simply ships those current versions.
 
 ## [Unreleased]
 
+### Added
+
+- `rp2350-emu`: SIO `GPIO_HI_OUT` / `GPIO_HI_OE` and their SET/CLR/XOR
+  aliases (`0x014`..`0x04C`). GPIO 32..47 now drive the pads on the
+  RP2350B package; the USB/QSPI bits (31:24) are stored but not driven.
+
 ### Fixed
 
 - `rp2350-emu`: `CPSIE`/`CPSID` decoded the I and F flags swapped. In the

@@ -1185,7 +1185,7 @@ impl Emulator {
     /// SIO/PIO produced; mask-set bits reflect `gpio_external_in`.
     pub(crate) fn update_gpio(&mut self) {
         let mut out_lo = self.bus.sio.gpio_out & self.bus.sio.gpio_oe;
-        let mut out_hi = 0u32;
+        let mut out_hi = self.bus.sio.gpio_hi_out & self.bus.sio.gpio_hi_oe & 0xFFFF; // GPIO 32..47 only
         for pio in &self.bus.pio {
             let (pio_out_lo, pio_out_hi) = pio.local_to_physical_pins(pio.pad_out);
             let (pio_oe_lo, pio_oe_hi) = pio.local_to_physical_pins(pio.pad_oe);

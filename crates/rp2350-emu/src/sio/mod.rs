@@ -24,6 +24,10 @@ pub(crate) const MTIME_CTRL_FULLSPEED: u32 = 1 << 1;
 /// `wrk_docs/2026.04.17 - HLD - Residual A.2.1 MTIME WATCHDOG_TICK Fix.md`.
 pub(crate) const MTIME_CTRL_RESET: u32 = 0x0D;
 
+/// Writable bits of GPIO_HI_OUT/OE (RP2350 datasheet, SIO): GPIO 32..47
+/// (15:0) and USB_DP/DM, QSPI_SCK/CSN/SD0..3 (31:24); 23:16 reserved.
+pub const GPIO_HI_MASK: u32 = 0xFF00_FFFF;
+
 /// Single-cycle IO block.
 ///
 /// GPIO output/OE/input registers + CPUID dispatch, FIFOs, spinlocks,
@@ -37,6 +41,11 @@ pub struct Sio {
     pub gpio_out: u32,
     /// SIO GPIO output enable register (offset 0x030).
     pub gpio_oe: u32,
+    /// SIO GPIO_HI_OUT (0x014): bits 0..15 = GPIO 32..47, bits 24..31 =
+    /// USB_DP/DM, QSPI_SCK/CSN/SD (stored, not driven).
+    pub gpio_hi_out: u32,
+    /// SIO GPIO_HI_OE (0x034).
+    pub gpio_hi_oe: u32,
     /// Inter-processor FIFO: Core 0 writes -> Core 1 reads.
     fifo_to_core1: Fifo,
     /// Inter-processor FIFO: Core 1 writes -> Core 0 reads.
@@ -79,6 +88,8 @@ impl Sio {
         Self {
             gpio_out: 0,
             gpio_oe: 0,
+            gpio_hi_out: 0,
+            gpio_hi_oe: 0,
             fifo_to_core1: Fifo::new(),
             fifo_to_core0: Fifo::new(),
             fifo_wof: [false; 2],
@@ -139,6 +150,8 @@ impl Sio {
     pub fn reset(&mut self) {
         self.gpio_out = 0;
         self.gpio_oe = 0;
+        self.gpio_hi_out = 0;
+        self.gpio_hi_oe = 0;
         self.fifo_to_core1 = Fifo::new();
         self.fifo_to_core0 = Fifo::new();
         self.fifo_wof = [false; 2];
@@ -163,6 +176,8 @@ impl Sio {
             0x000 => core as u32,   // CPUID
             0x010 => self.gpio_out, // GPIO_OUT
             0x030 => self.gpio_oe,  // GPIO_OE
+            0x014 => self.gpio_hi_out,
+            0x034 => self.gpio_hi_oe,
             // FIFO
             0x050 => self.fifo_st_read(core),
             0x058 => self.fifo_rd(core),
@@ -203,6 +218,15 @@ impl Sio {
             0x038 => self.gpio_oe |= val,  // GPIO_OE_SET
             0x040 => self.gpio_oe &= !val, // GPIO_OE_CLR
             0x048 => self.gpio_oe ^= val,  // GPIO_OE_XOR
+            // GPIO_HI_OUT/OE: GPIO 32..47 drive pins; QSPI/USB bits are stored only
+            0x014 => self.gpio_hi_out = val & GPIO_HI_MASK,
+            0x01C => self.gpio_hi_out |= val & GPIO_HI_MASK,
+            0x024 => self.gpio_hi_out &= !val,
+            0x02C => self.gpio_hi_out ^= val & GPIO_HI_MASK,
+            0x034 => self.gpio_hi_oe = val & GPIO_HI_MASK,
+            0x03C => self.gpio_hi_oe |= val & GPIO_HI_MASK,
+            0x044 => self.gpio_hi_oe &= !val,
+            0x04C => self.gpio_hi_oe ^= val & GPIO_HI_MASK,
             // FIFO
             0x050 => self.fifo_st_write(val, core),
             0x054 => self.fifo_wr(val, core),
