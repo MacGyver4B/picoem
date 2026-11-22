@@ -802,16 +802,21 @@ impl Ppb {
 
         loop {
             if rem <= self.syst_cvr {
+                let was = self.syst_cvr;
                 self.syst_cvr -= rem;
-                // Known gap (tech_debt.md): the decrement that transitions
-                // CVR exactly to 0 in this branch should fire per ARMv8-M
-                // §B11.2.1 but doesn't. Adding the fire here is
-                // silicon-accurate in isolation, but interacts with the
-                // cold-ISR cycle-model residual (HLD §9 Future Work, main
-                // instruction costs over-count by ~3 cycles) to split the
-                // ISR oracle's unified +3 residual into +3/-3, reducing
-                // signal clarity. Deferred until the cold-ISR residual
-                // lands.
+                // ARMv8-M §B11.2.1: the decrement that reaches 0 fires.
+                // Without this, a quantum that ends exactly on 0 drops the
+                // underflow (the next advance reloads from 0 without a
+                // fire). With a reload period that is a multiple of the
+                // quantum this lost every SysTick interrupt (firmware
+                // ticks froze in psd2sim). The cold-ISR oracle residual
+                // note in tech_debt.md still applies to cycle counts.
+                if was != 0 && self.syst_cvr == 0 {
+                    self.syst_csr |= SYST_CSR_COUNTFLAG;
+                    if self.syst_csr & SYST_CSR_TICKINT != 0 {
+                        self.pend_systick();
+                    }
+                }
                 break;
             }
             // Underflow with full reload in this advance: consume `cvr`

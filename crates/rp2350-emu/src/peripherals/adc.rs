@@ -134,6 +134,8 @@ pub struct AdcRegs {
     nvic_irq: u32,
     /// Number of channels for the package (5 on RP2350A, 9 on RP2350B).
     channels: u32,
+    /// Externally driven 12-bit inputs per channel (None = synthetic data).
+    inputs: [Option<u16>; ADC_CHANNELS_QFN80 as usize],
 }
 
 impl AdcRegs {
@@ -154,14 +156,27 @@ impl AdcRegs {
             conversion_counter: 0,
             nvic_irq,
             channels: ADC_CHANNELS_QFN60,
+            inputs: [None; ADC_CHANNELS_QFN80 as usize],
         }
     }
 
     pub fn reset(&mut self) {
         let irq = self.nvic_irq;
         let channels = self.channels;
+        let inputs = self.inputs;
         *self = Self::new(irq);
         self.channels = channels;
+        self.inputs = inputs;
+    }
+
+    /// Drive a channel from an off-chip model: `Some(raw)` makes every
+    /// conversion of `channel` return that 12-bit value (clamped to 4095),
+    /// `None` restores the synthetic test pattern. Out-of-range channels
+    /// are ignored.
+    pub fn set_input(&mut self, channel: u32, raw: Option<u16>) {
+        if let Some(slot) = self.inputs.get_mut(channel as usize) {
+            *slot = raw.map(|v| v.min(0xFFF));
+        }
     }
 
     /// Select the channel count for the package: [`ADC_CHANNELS_QFN60`]
@@ -234,6 +249,9 @@ impl AdcRegs {
     /// `ERR[15]:AINSEL[14:12]:RESULT[11:0]`.
     #[inline]
     fn make_sample(&self, channel: u32) -> u16 {
+        if let Some(Some(raw)) = self.inputs.get(channel as usize) {
+            return *raw;
+        }
         let payload = ((channel & 0xF) << 8) | (self.conversion_counter & 0xFF);
         (payload & 0xFFF) as u16
     }
@@ -514,6 +532,21 @@ mod tests {
             seen.push((a.read32(RESULT) >> 8) & 0xF);
         }
         seen
+    }
+
+    #[test]
+    fn external_input_overrides_synthetic_sample() {
+        let mut a = AdcRegs::new(ADC_IRQ);
+        a.set_channels(ADC_CHANNELS_QFN80);
+        let mut irqs = 0u64;
+        a.set_input(7, Some(0x9C4));
+        a.write32(CS, CS_EN | (7 << CS_AINSEL_SHIFT) | CS_START_ONCE, 0, &mut irqs);
+        a.tick(300, &default_tree(), &mut irqs);
+        assert_eq!(a.read32(RESULT), 0x9C4);
+        a.set_input(7, None);
+        a.write32(CS, CS_EN | (7 << CS_AINSEL_SHIFT) | CS_START_ONCE, 0, &mut irqs);
+        a.tick(300, &default_tree(), &mut irqs);
+        assert_eq!((a.read32(RESULT) >> 8) & 0xF, 7);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! RP2350 I2C peripheral (Synopsys DW_apb_i2c; datasheet §12.3).
 //!
 //! Phase 2 of the RP2350 peripheral coverage plan (HLD V5 §6 row 2).
-//! I2C0 lives at `0x4009_0000`, I2C1 at `0x4009_4000`.
+//! I2C0 lives at `0x4009_0000`, I2C1 at `0x4009_8000`.
 //!
 //! Mirrors the RP2040 I2C (`rp2040_emu::peripherals::i2c`) verbatim. The
 //! only RP2350 deltas are the NVIC IRQ number
@@ -27,8 +27,8 @@ use crate::irq::IRQ_I2C0_IRQ;
 
 /// I2C0 base (RP2350 datasheet §12.3).
 pub const I2C0_BASE: u32 = 0x4009_0000;
-/// I2C1 base (RP2350 datasheet §12.3, 4 KB stride).
-pub const I2C1_BASE: u32 = 0x4009_4000;
+/// I2C1 base (RP2350 datasheet §2.2, 32 KB stride; RP2040 used 16 KB).
+pub const I2C1_BASE: u32 = 0x4009_8000;
 
 pub const IC_CON: u32 = 0x00;
 pub const IC_TAR: u32 = 0x04;
@@ -115,6 +115,24 @@ const ABRT_7B_ADDR_NOACK: u32 = 1 << 0;
 /// "unsupported 10-bit addressing").
 const ABRT_10ADDR1_NOACK: u32 = 1 << 2;
 
+/// TX_ABRT reason bit: data byte not acknowledged by the target.
+const ABRT_TXDATA_NOACK: u32 = 1 << 3;
+
+/// An off-chip I2C target (slave) on the bus, e.g. an RTC or an I/O
+/// expander model. Attach with [`I2cRegs::attach_target`]; one model
+/// may answer several addresses.
+///
+/// Calls follow the bus: `start` after every START/RESTART (return
+/// `true` to ACK the address), then `write` per byte from the master
+/// (return `true` to ACK) or `read` per byte to the master, and `stop`
+/// at STOP. Addresses are 7-bit.
+pub trait I2cTarget: Send {
+    fn start(&mut self, addr: u8, read: bool) -> bool;
+    fn write(&mut self, byte: u8) -> bool;
+    fn read(&mut self) -> u8;
+    fn stop(&mut self);
+}
+
 pub struct I2cRegs {
     con: u32,
     tar: u32,
@@ -134,6 +152,10 @@ pub struct I2cRegs {
     tx_fifo: VecDeque<u32>,
     rx_fifo: VecDeque<u32>,
     activity: bool,
+    /// Attached target model (None = legacy NACK-everything bus).
+    target: Option<Box<dyn I2cTarget>>,
+    /// Direction of the running transfer to the target (None = idle).
+    xfer_read: Option<bool>,
     nvic_irq: u32,
     dreq_tx: u8,
     dreq_rx: u8,
@@ -168,6 +190,8 @@ impl I2cRegs {
             tx_fifo: VecDeque::with_capacity(I2C_FIFO_DEPTH),
             rx_fifo: VecDeque::with_capacity(I2C_FIFO_DEPTH),
             activity: false,
+            target: None,
+            xfer_read: None,
             nvic_irq,
             dreq_tx,
             dreq_rx,
@@ -178,7 +202,72 @@ impl I2cRegs {
         let irq = self.nvic_irq;
         let dtx = self.dreq_tx;
         let drx = self.dreq_rx;
+        let target = self.target.take();
         *self = Self::new(irq, dtx, drx);
+        self.target = target;
+    }
+
+    /// Attach an off-chip target model (replaces any previous one).
+    /// With a target attached, transfers are routed to it; addresses it
+    /// does not ACK abort with `ABRT_7B_ADDR_NOACK`, which stays latched
+    /// until `IC_CLR_TX_ABRT` / `IC_CLR_INTR` (as on silicon) so that
+    /// pico-sdk callers see the NACK.
+    pub fn attach_target(&mut self, target: Box<dyn I2cTarget>) {
+        self.target = Some(target);
+        self.xfer_read = None;
+    }
+
+    /// Transfer routed to an attached target.
+    fn target_transaction(&mut self, cmd: u32, irqs: &mut u64) {
+        let is_read = (cmd & DATA_CMD_READ) != 0;
+        let restart_en = (self.con & IC_CON_IC_RESTART_EN) != 0;
+        let need_start = match self.xfer_read {
+            None => true,
+            Some(dir) => (cmd & DATA_CMD_RESTART) != 0 || (restart_en && dir != is_read),
+        };
+        self.activity = true;
+        let ten_bit = (self.con & IC_CON_10BIT_ADDR_MASTER) != 0;
+        let target = self.target.as_mut().expect("target");
+        let mut abort = 0;
+        if need_start {
+            self.raw_intr_stat |= INT_START_DET;
+            if ten_bit || !target.start((self.tar & 0x7F) as u8, is_read) {
+                abort = if ten_bit { ABRT_10ADDR1_NOACK } else { ABRT_7B_ADDR_NOACK };
+            } else {
+                self.xfer_read = Some(is_read);
+            }
+        }
+        if abort == 0 {
+            if is_read {
+                let b = target.read();
+                if self.rx_fifo.len() < I2C_FIFO_DEPTH {
+                    self.rx_fifo.push_back(b as u32);
+                } else {
+                    self.raw_intr_stat |= INT_RX_OVER;
+                }
+                if self.rx_fifo.len() > (self.rx_tl as usize) {
+                    self.raw_intr_stat |= INT_RX_FULL;
+                }
+            } else if !target.write((cmd & 0xFF) as u8) {
+                abort = ABRT_TXDATA_NOACK;
+            }
+            // The byte left the (modelled) TX FIFO at once.
+            self.raw_intr_stat |= INT_TX_EMPTY;
+        }
+        if abort != 0 {
+            self.raw_intr_stat |= INT_TX_ABRT | INT_TX_EMPTY;
+            self.tx_abrt_source |= abort;
+            self.tx_fifo.clear();
+        }
+        if (cmd & DATA_CMD_STOP) != 0 || abort != 0 {
+            if self.xfer_read.is_some() || abort != 0 {
+                target.stop();
+            }
+            self.xfer_read = None;
+            self.raw_intr_stat |= INT_STOP_DET;
+            self.activity = false;
+        }
+        self.route_irq(irqs);
     }
 
     /// DREQ index for TX FIFO (consumed by the DMA matrix).
@@ -245,6 +334,10 @@ impl I2cRegs {
     /// Apply the "wrote to IC_DATA_CMD while EN=1" side effect.
     fn simulate_transaction(&mut self, cmd: u32, irqs: &mut u64) {
         if !self.is_enabled() {
+            return;
+        }
+        if self.target.is_some() {
+            self.target_transaction(cmd, irqs);
             return;
         }
         self.activity = true;
@@ -1151,5 +1244,75 @@ mod tests {
         let snapshot_con = i.con;
         i.write32(0x1FC, 0xDEAD, 0, &mut irqs);
         assert_eq!(i.con, snapshot_con);
+    }
+
+    /// Register-file target: write = [reg, data...], read from reg on.
+    struct RegTarget {
+        addr: u8,
+        regs: std::sync::Arc<std::sync::Mutex<[u8; 8]>>,
+        ptr: usize,
+        first: bool,
+    }
+
+    impl I2cTarget for RegTarget {
+        fn start(&mut self, addr: u8, _read: bool) -> bool {
+            self.first = true;
+            addr == self.addr
+        }
+        fn write(&mut self, byte: u8) -> bool {
+            if self.first {
+                self.ptr = byte as usize & 7;
+                self.first = false;
+            } else {
+                self.regs.lock().unwrap()[self.ptr] = byte;
+                self.ptr = (self.ptr + 1) & 7;
+            }
+            true
+        }
+        fn read(&mut self) -> u8 {
+            let v = self.regs.lock().unwrap()[self.ptr];
+            self.ptr = (self.ptr + 1) & 7;
+            v
+        }
+        fn stop(&mut self) {}
+    }
+
+    #[test]
+    fn target_write_then_restart_read() {
+        let regs = std::sync::Arc::new(std::sync::Mutex::new([0u8; 8]));
+        let mut i = i0();
+        let mut irqs = 0u64;
+        i.attach_target(Box::new(RegTarget { addr: 0x26, regs: regs.clone(), ptr: 0, first: true }));
+        i.write32(IC_TAR, 0x26, 0, &mut irqs);
+        i.write32(IC_ENABLE, 1, 0, &mut irqs);
+        // write reg 3 = 0xAB, 0xCD with STOP
+        i.write32(IC_DATA_CMD, 3, 0, &mut irqs);
+        i.write32(IC_DATA_CMD, 0xAB, 0, &mut irqs);
+        i.write32(IC_DATA_CMD, 0xCD | DATA_CMD_STOP, 0, &mut irqs);
+        assert_ne!(i.read32(IC_RAW_INTR_STAT) & INT_STOP_DET, 0);
+        assert_eq!(i.read32(IC_TX_ABRT_SOURCE), 0);
+        assert_eq!(regs.lock().unwrap()[3..5], [0xAB, 0xCD]);
+        // pointer 3, then repeated start and read two bytes
+        i.write32(IC_DATA_CMD, 3, 0, &mut irqs);
+        i.write32(IC_DATA_CMD, DATA_CMD_READ | DATA_CMD_RESTART, 0, &mut irqs);
+        i.write32(IC_DATA_CMD, DATA_CMD_READ | DATA_CMD_STOP, 0, &mut irqs);
+        assert_eq!(i.read32(IC_RXFLR), 2);
+        assert_eq!(i.read32(IC_DATA_CMD), 0xAB);
+        assert_eq!(i.read32(IC_DATA_CMD), 0xCD);
+    }
+
+    #[test]
+    fn target_nack_latches_abort() {
+        let regs = std::sync::Arc::new(std::sync::Mutex::new([0u8; 8]));
+        let mut i = i0();
+        let mut irqs = 0u64;
+        i.attach_target(Box::new(RegTarget { addr: 0x26, regs, ptr: 0, first: true }));
+        i.write32(IC_TAR, 0x68, 0, &mut irqs);
+        i.write32(IC_ENABLE, 1, 0, &mut irqs);
+        i.write32(IC_DATA_CMD, 0 | DATA_CMD_STOP, 0, &mut irqs);
+        assert_ne!(i.read32(IC_RAW_INTR_STAT) & INT_TX_ABRT, 0);
+        assert_eq!(i.read32(IC_TX_ABRT_SOURCE) & ABRT_7B_ADDR_NOACK, ABRT_7B_ADDR_NOACK);
+        let _ = i.read32(IC_CLR_TX_ABRT);
+        assert_eq!(i.read32(IC_TX_ABRT_SOURCE), 0);
     }
 }

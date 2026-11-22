@@ -1328,6 +1328,20 @@ impl Emulator {
         }
     }
 
+    /// Attach an off-chip I2C target model to I2C0 (`index` 0) or I2C1
+    /// (`index` 1); see [`peripherals::i2c::I2cTarget`].
+    pub fn i2c_attach_target(&mut self, index: usize, target: Box<dyn peripherals::i2c::I2cTarget>) {
+        self.assert_not_placeholder();
+        self.bus.i2c[index & 1].attach_target(target);
+    }
+
+    /// Drive an ADC channel from an off-chip model (12-bit raw value,
+    /// `None` = synthetic data); see [`peripherals::adc::AdcRegs::set_input`].
+    pub fn adc_set_input(&mut self, channel: u32, raw: Option<u16>) {
+        self.assert_not_placeholder();
+        self.bus.adc.set_input(channel, raw);
+    }
+
     /// Direct memory write (bypasses bus timing).
     ///
     /// **Cache note:** this bypasses the `Bus::write32` path and does

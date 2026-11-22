@@ -700,8 +700,16 @@ splitting the ISR oracle's unified +3 residual into +3 (cold) /
 residual is closed, re-apply bug 2 fix to regain silicon semantics
 without signal degradation.
 
-Priority: low (latent, no current scenario exercises the rem=cvr
-boundary in a way that observably diverges from silicon).
+**Update 2026-11-22: fixed on `rp2350b-fixes`.** The boundary is
+not latent: with a reload period that is a multiple of
+`step_quantum` (e.g. RVR+1 = 1 500 000 at quantum 8, a 100 Hz tick
+at 150 MHz) every quantum ends exactly on CVR = 0 and *every*
+SysTick interrupt is lost; in less aligned firmware about two of
+three were lost. Seen in psd2sim (petSD2 firmware ticks frozen in a
+5-second splash wait). The fire on the transition to 0 is now in
+place (test `systick_quantum_ending_on_zero_fires_once`). Expect the
+`isr_tail_chain_pendsv_systick` oracle residual to split as
+described above until the cold-ISR residual is closed.
 
 ## PicoGUS Integration — Stage 1 follow-ups
 

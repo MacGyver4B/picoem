@@ -21375,6 +21375,29 @@ mod stage7_ppb_coverage {
     }
 
     #[test]
+    fn systick_quantum_ending_on_zero_fires_once() {
+        // RVR+1 = 16 cycles, advanced in quanta of 8: every second quantum
+        // ends exactly on CVR = 0. Each period must fire exactly once.
+        let mut ppb = Ppb {
+            syst_csr: 1 | 2,
+            syst_rvr: 15,
+            syst_cvr: 0,
+            last_systick_cycles: 0,
+            ..Ppb::default()
+        };
+        let mut fires = 0;
+        for q in 1..=16u64 {
+            ppb.systick_advance(q * 8);
+            if ppb.icsr & crate::bus::ppb::ICSR_PENDSTSET != 0 {
+                fires += 1;
+                ppb.icsr &= !crate::bus::ppb::ICSR_PENDSTSET;
+            }
+        }
+        // reload from 0 on cycle 1, then a fire every 16 cycles (16..128)
+        assert_eq!(fires, 8);
+    }
+
+    #[test]
     fn systick_disabled_no_advance() {
         let mut ppb = Ppb {
             syst_cvr: 100,

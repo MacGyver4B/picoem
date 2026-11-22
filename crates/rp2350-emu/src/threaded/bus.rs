@@ -2071,7 +2071,7 @@ mod tests {
             // RESET_UART1 (bit 26); `is_held_in_reset_base(UART1_BASE)` is
             // true. A read32 must return 0 without touching UART1 state.
             let mut bus = WorkerBus::new(0, shared);
-            let uart1_base: u32 = 0x4007_4000;
+            let uart1_base: u32 = 0x4007_8000;
             assert_eq!(
                 bus.read32(uart1_base + 0x04, 0),
                 0,
@@ -2086,7 +2086,7 @@ mod tests {
             let shared = fresh_shared();
             // SPI1 is held in reset post-bootrom. A write there must not
             // panic and must not affect the RESETS state.
-            let spi1_base: u32 = 0x4008_4000;
+            let spi1_base: u32 = 0x4008_8000;
             let mut bus = WorkerBus::new(0, shared.clone());
             bus.write32(spi1_base + 0x10, 0xDEAD_BEEF, 0);
             // Readback also returns 0 via the held-guard.
@@ -2537,15 +2537,15 @@ mod tests {
         #[test]
         fn narrow_write_held_peripheral_drops() {
             let shared = fresh_shared();
-            // UART1 is held; its UARTDR is 0x4007_4000. try_narrow_write8
+            // UART1 is held; its UARTDR is 0x4007_8000. try_narrow_write8
             // must return `true` (consumed) and the write must not reach
             // the peripheral.
             let mut bus = WorkerBus::new(0, shared);
-            bus.write8(0x4007_4000, 0x41, 0);
-            bus.write16(0x4007_4000, 0x00_41, 0);
+            bus.write8(0x4007_8000, 0x41, 0);
+            bus.write16(0x4007_8000, 0x00_41, 0);
             // read8 via the held peripheral returns 0.
-            assert_eq!(bus.read8(0x4007_4000, 0), 0);
-            assert_eq!(bus.read16(0x4007_4000, 0), 0);
+            assert_eq!(bus.read8(0x4007_8000, 0), 0);
+            assert_eq!(bus.read16(0x4007_8000, 0), 0);
         }
 
         // ---- AHB byte / halfword write -------------------------------
